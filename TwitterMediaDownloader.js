@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitter Media Downloader
 // @namespace    http://tampermonkey.net/
-// @version      1.7
+// @version      1.6
 // @description  Download images and videos from Twitter posts and pack them into a ZIP archive with metadata.
 // @author       Dramorian
 // @license      MIT
@@ -13,47 +13,24 @@
 // @updateURL    https://update.greasyfork.org/scripts/503354/Twitter%20Media%20Downloader.meta.js
 // ==/UserScript==
 
-(function () {
+(function() {
     'use strict';
 
     const BASE_URL = 'https://x.com/i/api/graphql/QuBlQ6SxNAQCt6-kBiCXCQ/TweetDetail';
 
     function getCookie() {
         const cookies = document.cookie.split(';').reduce((acc, cookie) => {
-            const [name, value] = cookie.split('=').map(part => part.trim());
-            if (name) {
-                acc[name] = value || ''; // Ensure empty string if value is undefined
-            }
+            const [name, value] = cookie.split('=').map(c => c.trim());
+            acc[name] = value;
             return acc;
         }, {});
-
         return {
-            lang: cookies.lang || 'en', // Default to 'en' if lang is not present
-            ct0: cookies.ct0 || ''     // Default to empty string if ct0 is not present
+            lang: cookies.lang || 'en',
+            ct0: cookies.ct0 || ''
         };
     }
 
     async function fetchTweetData(tweetId) {
-        try {
-            const url = buildTweetDataURL(tweetId);
-            const headers = buildHeaders(getCookie());
-
-            const response = await fetch(url, {method: 'GET', headers});
-
-            if (!response.ok) {
-                await logErrorResponse(response);
-                return [];
-            }
-
-            const data = await response.json();
-            return extractMediaFromTweetData(data, tweetId);
-        } catch (error) {
-            console.error('Failed to fetch tweet data:', error);
-            return [];
-        }
-    }
-
-    function buildTweetDataURL(tweetId) {
         const variables = {
             focalTweetId: tweetId,
             with_rux_injections: false,
@@ -98,98 +75,87 @@
             withDisallowedReplyControls: false
         };
 
-        return encodeURI(`${BASE_URL}?variables=${JSON.stringify(variables)}&features=${JSON.stringify(features)}&fieldToggles=${JSON.stringify(fieldToggles)}`);
-    }
-
-    function buildHeaders(cookies) {
-        return {
+        const url = encodeURI(`${BASE_URL}?variables=${JSON.stringify(variables)}&features=${JSON.stringify(features)}&fieldToggles=${JSON.stringify(fieldToggles)}`);
+        const cookies = getCookie();
+        const headers = {
             'authorization': 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA',
             'x-twitter-active-user': 'yes',
             'x-twitter-client-language': cookies.lang,
             'x-csrf-token': cookies.ct0
         };
-    }
 
-    async function logErrorResponse(response) {
-        const text = await response.text();
-        console.error(`Error: ${text}`);
-    }
+        try {
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: headers
+            });
 
-    function extractMediaFromTweetData(data, tweetId) {
-        const tweetEntry = data.data?.threaded_conversation_with_injections_v2?.instructions?.[0]?.entries?.find(n => n.entryId === `tweet-${tweetId}`);
-        const tweetResult = tweetEntry?.content?.itemContent?.tweet_results?.result;
-
-        if (!tweetResult) {
-            console.error('Tweet result not found');
-            return [];
-        }
-
-        const media = tweetResult.legacy?.entities?.media;
-
-        if (!media || media.length === 0) {
-            return [];
-        }
-
-        return media.flatMap(item => {
-            if (item.type === 'photo') {
-                return [item.media_url_https + '?name=orig'];
-            } else if (item.type === 'video') {
-                return extractHighestQualityVideo(item);
-            } else if (item.type === 'animated_gif') {
-                return extractGifVariant(item);
+            if (!response.ok) {
+                const text = await response.text();
+                console.error(`Error: ${text}`);
+                return [];
             }
+
+            const data = await response.json();
+            const tweetEntry = data.data?.threaded_conversation_with_injections_v2?.instructions?.[0]?.entries?.find(n => n.entryId === `tweet-${tweetId}`);
+            const tweetResult = tweetEntry?.content?.itemContent?.tweet_results?.result;
+
+            if (!tweetResult) {
+                console.error('Tweet result not found');
+                return [];
+            }
+
+            const media = tweetResult.legacy?.entities?.media;
+
+            if (!media || media.length === 0) {
+                return [];
+            }
+
+            return media.flatMap(item => {
+                if (item.type === 'photo') {
+                    return [item.media_url_https + '?name=orig'];
+                } else if (item.type === 'video') {
+                    const highestQuality = item.video_info.variants
+                        .filter(variant => variant.content_type === 'video/mp4')
+                        .reduce((max, variant) => variant.bitrate > max.bitrate ? variant : max, {
+                            bitrate: 0
+                        });
+
+                    return [{
+                        url: highestQuality.url,
+                        bitrate: highestQuality.bitrate,
+                        content_type: highestQuality.content_type
+                    }];
+                } else if (item.type === 'animated_gif') {
+                    const gifVariant = item.video_info.variants
+                        .find(variant => variant.content_type === 'video/mp4');
+
+                    return gifVariant ? [{
+                        url: gifVariant.url,
+                        bitrate: gifVariant.bitrate,
+                        content_type: gifVariant.content_type
+                    }] : [];
+                }
+                return [];
+            });
+
+        } catch (error) {
+            console.error('Failed to fetch tweet data:', error);
             return [];
-        });
-    }
-
-    function extractHighestQualityVideo(item) {
-        const highestQuality = item.video_info.variants
-            .filter(variant => variant.content_type === 'video/mp4')
-            .reduce((max, variant) => variant.bitrate > max.bitrate ? variant : max, {bitrate: 0});
-
-        return [{
-            url: highestQuality.url,
-            bitrate: highestQuality.bitrate,
-            content_type: highestQuality.content_type
-        }];
-    }
-
-    function extractGifVariant(item) {
-        const gifVariant = item.video_info.variants
-            .find(variant => variant.content_type === 'video/mp4');
-
-        return gifVariant ? [{
-            url: gifVariant.url,
-            bitrate: gifVariant.bitrate,
-            content_type: gifVariant.content_type
-        }] : [];
+        }
     }
 
     async function downloadMedia(tweetElement, mediaData) {
         const zip = new JSZip();
         const tweetLinkElement = tweetElement.querySelector('a[href*="/status/"]');
-        const {authorHandle, tweetId, tweetLink} = extractTweetDetails(tweetLinkElement);
-
-        const metadata = buildMetadata(tweetElement, tweetLink, authorHandle);
-        await addMediaToZip(zip, mediaData, authorHandle, tweetId, metadata);
-
-        await addMetadataAndSaveZip(zip, metadata, authorHandle, tweetId, tweetLink);
-    }
-
-    function extractTweetDetails(tweetLinkElement) {
-        const tweetLink = tweetLinkElement.href;
+        let tweetLink = tweetLinkElement.href;
         const tweetParts = tweetLink.match(/https:\/\/(?:x\.com|twitter\.com)\/([^\/]+)\/status\/(\d+)/);
         const authorHandle = tweetParts[1];
         const tweetId = tweetParts[2];
 
-        return {
-            authorHandle,
-            tweetId,
-            tweetLink: `https://x.com/${authorHandle}/status/${tweetId}`
-        };
-    }
+        // Normalize the tweet URL to ensure it doesn't include media indexes
+        tweetLink = `https://x.com/${authorHandle}/status/${tweetId}`;
 
-    function buildMetadata(tweetElement, tweetLink, authorHandle) {
         const authorCommentElement = tweetElement.querySelector('div[lang]');
         const authorComment = authorCommentElement ? authorCommentElement.innerText : '';
         const dateElement = tweetElement.querySelector('time');
@@ -201,133 +167,121 @@
         }
         metadata += `@${authorHandle}\n${postDateTime.toLocaleString()}\n`;
 
-        return metadata;
-    }
-
-    async function addMediaToZip(zip, mediaData, authorHandle, tweetId, metadata) {
         let mediaIndex = 1;
-
         for (const media of mediaData) {
             try {
-                const {fileName, fileData} = await fetchMediaFile(media, authorHandle, tweetId, mediaIndex);
-                zip.file(fileName, fileData);
-                metadata += `${media.url || media}\n`;
+                if (media.content_type === 'video/mp4') {
+                    const videoData = await fetch(media.url).then(res => res.blob());
+                    const videoName = `${authorHandle}_${tweetId}_${mediaIndex}.mp4`;
+                    zip.file(videoName, videoData);
+                    metadata += `${media.url}\n`;
+                } else {
+                    const imageData = await fetch(media).then(res => res.blob());
+                    const imageName = `${authorHandle}_${tweetId}_${mediaIndex}.jpg`;
+                    zip.file(imageName, imageData);
+                    metadata += `${media}\n`;
+                }
                 mediaIndex++;
             } catch (error) {
                 console.error('Failed to fetch media:', error);
             }
         }
-    }
 
-    async function fetchMediaFile(media, authorHandle, tweetId, mediaIndex) {
-        let fileName, fileData;
-
-        if (media.content_type === 'video/mp4') {
-            fileData = await fetch(media.url).then(res => res.blob());
-            fileName = `${authorHandle}_${tweetId}_${mediaIndex}.mp4`;
-        } else {
-            fileData = await fetch(media).then(res => res.blob());
-            fileName = `${authorHandle}_${tweetId}_${mediaIndex}.jpg`;
-        }
-
-        return {fileName, fileData};
-    }
-
-    async function addMetadataAndSaveZip(zip, metadata, authorHandle, tweetId, tweetLink) {
         zip.file('metadata.txt', metadata.trim());
         zip.file(`${authorHandle}_${tweetId}.url`, `[InternetShortcut]\nURL=${tweetLink}`);
 
-        const content = await zip.generateAsync({type: 'blob'});
+        const content = await zip.generateAsync({
+            type: 'blob'
+        });
         saveAs(content, `${authorHandle}_${tweetId}.zip`);
     }
 
-
     function addDownloadButton(tweetElement) {
-        const tweetLinkElement = getTweetLinkElement(tweetElement);
+        const tweetLinkElement = tweetElement.querySelector('a[href*="/status/"]');
         if (!tweetLinkElement) return;
 
-        const tweetId = extractTweetId(tweetLinkElement);
-        if (!tweetId || !hasMedia(tweetElement)) return;
-
-        if (isTweetProcessed(tweetId) || tweetElement.querySelector('.download-media-btn')) return;
-
-        const button = createDownloadButton(tweetId);
-        attachButtonToActionBar(tweetElement, button);
-    }
-
-    function getTweetLinkElement(tweetElement) {
-        return tweetElement.querySelector('a[href*="/status/"]');
-    }
-
-    function extractTweetId(tweetLinkElement) {
         const tweetLink = tweetLinkElement.href;
         const tweetParts = tweetLink.match(/https:\/\/(?:x\.com|twitter\.com)\/([^\/]+)\/status\/(\d+)/);
-        return tweetParts ? tweetParts[2] : null;
-    }
+        const tweetId = tweetParts[2];
 
-    function hasMedia(tweetElement) {
+        // CSS selectors to determine if media is present
         const mediaSelectors = [
             'a[href*="/photo/1"]',
             'div[role="progressbar"]',
             'button[data-testid="playButton"]',
         ];
-        return mediaSelectors.some(selector => tweetElement.querySelector(selector));
-    }
 
-    function isTweetProcessed(tweetId) {
+        // Check if any media selectors are present
+        const hasMedia = mediaSelectors.some(selector => tweetElement.querySelector(selector));
+
+        if (!hasMedia) return;
+
+        // Check if tweet has been processed
         const processedTweets = JSON.parse(localStorage.getItem('processedTweets') || '[]');
-        return processedTweets.includes(tweetId);
-    }
+        const isProcessed = processedTweets.includes(tweetId);
 
-    function createDownloadButton(tweetId) {
+        // Store the tweetId in a data attribute on the button
+        if (tweetElement.querySelector('.download-media-btn')) return;
+
         const button = document.createElement('button');
         button.className = 'download-media-btn';
-        Object.assign(button.style, {
-            marginLeft: '10px',
-            padding: '6px',
-            border: 'none',
-            backgroundColor: 'transparent',
-            cursor: 'pointer',
-        });
+        button.style.marginLeft = '10px';
+        button.style.padding = '6px';
+        button.style.border = 'none';
+        button.style.backgroundColor = 'transparent';
+        button.style.cursor = 'pointer';
 
-        const isProcessed = isTweetProcessed(tweetId);
-        button.innerHTML = createButtonSVG(isProcessed);
-        button.dataset.tweetId = tweetId;
-        button.addEventListener('click', () => onDownloadButtonClick(button));
-
-        return button;
-    }
-
-    function createButtonSVG(isProcessed) {
-        const strokeColor = isProcessed ? '#28a745' : '#1da1f2';
-        return `
-        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="${strokeColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-download">
+        // Insert the SVG icon with color based on processed status
+        button.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="${isProcessed ? '#28a745' : '#1da1f2'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-download">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
             <polyline points="7 10 12 15 17 10"></polyline>
             <line x1="12" y1="15" x2="12" y2="3"></line>
         </svg>
     `;
-    }
+        button.dataset.tweetId = tweetId; // Store the tweet ID
 
-    function attachButtonToActionBar(tweetElement, button) {
+        button.addEventListener('click', () => onDownloadButtonClick(button));
+
         const actionBar = tweetElement.querySelector('[role="group"]');
         if (actionBar) {
             actionBar.appendChild(button);
         }
     }
 
-
     async function onDownloadButtonClick(button) {
         const tweetId = button.dataset.tweetId;
 
-        // Log and show loading animation
+        // Log the fetching process
         console.log(`Fetching media for tweetId: ${tweetId}`);
-        showLoadingAnimation(button);
 
-        // Optionally disable the button during fetch
-        button.disabled = true;
+        // Change the SVG icon to a bouncing dots animation
+        button.innerHTML = `
+    <svg width="24" height="24" viewBox="0 0 120 30" xmlns="http://www.w3.org/2000/svg" fill="#1da1f2">
+        <circle cx="15" cy="15" r="15">
+            <animate attributeName="r" from="15" to="15" begin="0s" dur="0.8s"
+                values="15;9;15" calcMode="linear" repeatCount="indefinite" />
+            <animate attributeName="fill-opacity" from="1" to="1" begin="0s" dur="0.8s"
+                values="1;.5;1" calcMode="linear" repeatCount="indefinite" />
+        </circle>
+        <circle cx="60" cy="15" r="9" fill-opacity="0.3">
+            <animate attributeName="r" from="9" to="9" begin="0s" dur="0.8s"
+                values="9;15;9" calcMode="linear" repeatCount="indefinite" />
+            <animate attributeName="fill-opacity" from="0.5" to="0.5" begin="0s" dur="0.8s"
+                values=".5;1;.5" calcMode="linear" repeatCount="indefinite" />
+        </circle>
+        <circle cx="105" cy="15" r="15">
+            <animate attributeName="r" from="15" to="15" begin="0s" dur="0.8s"
+                values="15;9;15" calcMode="linear" repeatCount="indefinite" />
+            <animate attributeName="fill-opacity" from="1" to="1" begin="0s" dur="0.8s"
+                values="1;.5;1" calcMode="linear" repeatCount="indefinite" />
+        </circle>
+    </svg>
+    `;
+        button.disabled = true; // Optionally disable the button during fetch
 
         try {
+            // Fetch the tweet data when the button is clicked
             const mediaData = await fetchTweetData(tweetId);
 
             if (mediaData.length === 0) {
@@ -335,82 +289,45 @@
                 return;
             }
 
+            // Find the tweet element containing the button
             const tweetElement = button.closest('article');
             if (tweetElement) {
                 await downloadMedia(tweetElement, mediaData);
-                markTweetAsProcessed(tweetId);
-                updateButtonIcon(button, true);
+
+                // Mark the tweet as processed
+                const processedTweets = JSON.parse(localStorage.getItem('processedTweets') || '[]');
+                if (!processedTweets.includes(tweetId)) {
+                    processedTweets.push(tweetId);
+                    localStorage.setItem('processedTweets', JSON.stringify(processedTweets));
+                }
+
+                // Update the icon color to green
+                button.innerHTML = `
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#28a745" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-download">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+        `;
             }
         } catch (error) {
             console.error('Failed to fetch or download media:', error);
         } finally {
-            // Re-enable the button even if there was an error
+            // Ensure the button is re-enabled even if there was an error
             button.disabled = false;
         }
     }
 
-    function showLoadingAnimation(button) {
-        button.innerHTML = `
-        <svg width="24" height="24" viewBox="0 0 120 30" xmlns="http://www.w3.org/2000/svg" fill="#1da1f2">
-            <circle cx="15" cy="15" r="15">
-                <animate attributeName="r" from="15" to="15" begin="0s" dur="0.8s"
-                    values="15;9;15" calcMode="linear" repeatCount="indefinite" />
-                <animate attributeName="fill-opacity" from="1" to="1" begin="0s" dur="0.8s"
-                    values="1;.5;1" calcMode="linear" repeatCount="indefinite" />
-            </circle>
-            <circle cx="60" cy="15" r="9" fill-opacity="0.3">
-                <animate attributeName="r" from="9" to="9" begin="0s" dur="0.8s"
-                    values="9;15;9" calcMode="linear" repeatCount="indefinite" />
-                <animate attributeName="fill-opacity" from="0.5" to="0.5" begin="0s" dur="0.8s"
-                    values=".5;1;.5" calcMode="linear" repeatCount="indefinite" />
-            </circle>
-            <circle cx="105" cy="15" r="15">
-                <animate attributeName="r" from="15" to="15" begin="0s" dur="0.8s"
-                    values="15;9;15" calcMode="linear" repeatCount="indefinite" />
-                <animate attributeName="fill-opacity" from="1" to="1" begin="0s" dur="0.8s"
-                    values="1;.5;1" calcMode="linear" repeatCount="indefinite" />
-            </circle>
-        </svg>
-    `;
-    }
-
-    function updateButtonIcon(button, isProcessed) {
-        const strokeColor = isProcessed ? '#28a745' : '#1da1f2';
-        button.innerHTML = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="${strokeColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-download">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-            <polyline points="7 10 12 15 17 10"></polyline>
-            <line x1="12" y1="15" x2="12" y2="3"></line>
-        </svg>
-    `;
-    }
-
-    function markTweetAsProcessed(tweetId) {
-        const processedTweets = JSON.parse(localStorage.getItem('processedTweets') || '[]');
-        if (!processedTweets.includes(tweetId)) {
-            processedTweets.push(tweetId);
-            localStorage.setItem('processedTweets', JSON.stringify(processedTweets));
-        }
-    }
-
-
-    const observer = new MutationObserver(handleMutations);
-
-    function handleMutations(mutations) {
-        mutations.forEach(mutation => {
-            mutation.addedNodes.forEach(node => {
-                if (node.nodeType === Node.ELEMENT_NODE) {
-                    processAddedNode(node);
+    const observer = new MutationObserver(mutations => {
+        for (const mutation of mutations) {
+            for (const addedNode of mutation.addedNodes) {
+                if (addedNode.nodeType === Node.ELEMENT_NODE) {
+                    const tweetElements = addedNode.matches('article') ? [addedNode] : addedNode.querySelectorAll('article');
+                    tweetElements.forEach(tweetElement => addDownloadButton(tweetElement));
                 }
-            });
-        });
-    }
-
-    function processAddedNode(node) {
-        // Check if the node itself is a tweet element or contains tweet elements
-        const tweetElements = node.matches('article') ? [node] : node.querySelectorAll('article');
-        tweetElements.forEach(tweetElement => addDownloadButton(tweetElement));
-    }
+            }
+        }
+    });
 
     observer.observe(document.body, {
         childList: true,
