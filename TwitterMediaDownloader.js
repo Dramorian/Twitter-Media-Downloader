@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitter Media Downloader
 // @namespace    http://tampermonkey.net/
-// @version      1.7
+// @version      1.8
 // @description  Download images and videos from Twitter posts and pack them into a ZIP archive with metadata.
 // @author       Dramorian
 // @license      MIT
@@ -113,14 +113,17 @@
         const tweetEntry = data?.data?.threaded_conversation_with_injections_v2?.instructions?.[0]?.entries?.find(n => n.entryId === `tweet-${tweetId}`);
         const tweetResult = tweetEntry?.content?.itemContent?.tweet_results?.result;
 
-        if (!tweetResult) {
-            console.error('Tweet result not found');
+        const tweet = tweetResult?.tweet || tweetResult;
+
+        if (!tweet) {
+            console.error(`Tweet result not found for tweet ID: ${tweetId}`);
             return [];
         }
 
-        const media = tweetResult.legacy?.entities?.media;
+        const media = tweet?.legacy?.entities?.media;
 
         if (!media || media.length === 0) {
+            console.error(`No media found for tweet ID: ${tweetId}`);
             return [];
         }
 
@@ -238,9 +241,7 @@
         const tweetLinkElement = tweetElement.querySelector('a[href*="/status/"]');
         if (!tweetLinkElement) return;
 
-        const {
-            tweetId, authorHandle
-        } = extractTweetDetails(tweetLinkElement.href);
+        const {tweetId, authorHandle} = extractTweetDetails(tweetLinkElement.href);
 
         if (!hasMedia(tweetElement)) return;
 
