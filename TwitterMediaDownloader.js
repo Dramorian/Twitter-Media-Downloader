@@ -9,60 +9,32 @@
 // @match        https://x.com/*
 // @require      https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js
-// @downloadURL  https://update.greasyfork.org/scripts/503354/Twitter%20Media%20Downloader.user.js
-// @updateURL    https://update.greasyfork.org/scripts/503354/Twitter%20Media%20Downloader.meta.js
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    const BASE_URL = 'https://x.com/i/api/graphql/QuBlQ6SxNAQCt6-kBiCXCQ/TweetDetail';
+    const API_URL = 'https://x.com/i/api/graphql/QuBlQ6SxNAQCt6-kBiCXCQ/TweetDetail';
 
-    function getCookie() {
-        const cookies = document.cookie.split(';').reduce((acc, cookie) => {
-            const [name, value] = cookie.split('=').map(c => c.trim());
-            acc[name] = value;
-            return acc;
-        }, {});
-        return {
-            lang: cookies.lang || 'en', ct0: cookies.ct0 || ''
-        };
-    }
+    // ### Cookie Handling
+    const getCookie = (name) => {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        return parts.length === 2 ? parts.pop().split(';').shift() : null;
+    };
 
-    async function fetchTweetData(tweetId) {
-        const url = createTweetUrl(tweetId);
-        const headers = createHeaders();
-
-        try {
-            const response = await fetch(url, {
-                method: 'GET', headers
-            });
-
-            if (!response.ok) {
-                throw new Error(`Failed to fetch tweet: ${await response.text()}`);
-            }
-
-            const data = await response.json();
-            return extractMediaFromTweet(data, tweetId);
-
-        } catch (error) {
-            console.error('Failed to fetch tweet data:', error);
-            return [];
-        }
-    }
-
-    function createTweetUrl(tweetId) {
+    // ### API Interaction
+    const createTweetUrl = (tweetId) => {
         const variables = {
             focalTweetId: tweetId,
             with_rux_injections: false,
-            rankingMode: "Relevance",
+            rankingMode: 'Relevance',
             includePromotedContent: true,
             withCommunity: true,
             withQuickPromoteEligibilityTweetFields: true,
             withBirdwatchNotes: true,
             withVoice: true
         };
-
         const features = {
             rweb_tipjar_consumption_enabled: true,
             responsive_web_graphql_exclude_directive_enabled: true,
@@ -88,46 +60,50 @@
             longform_notetweets_inline_media_enabled: true,
             responsive_web_enhance_cards_enabled: false
         };
-
         const fieldToggles = {
             withArticleRichContentState: true,
             withArticlePlainText: false,
             withGrokAnalyze: false,
             withDisallowedReplyControls: false
         };
+        return `${API_URL}?variables=${encodeURIComponent(JSON.stringify(variables))}&features=${encodeURIComponent(JSON.stringify(features))}&fieldToggles=${encodeURIComponent(JSON.stringify(fieldToggles))}`;
+    };
 
-        return encodeURI(`${BASE_URL}?variables=${JSON.stringify(variables)}&features=${JSON.stringify(features)}&fieldToggles=${JSON.stringify(fieldToggles)}`);
-    }
-
-    function createHeaders() {
-        const cookies = getCookie();
+    const createHeaders = () => {
+        const lang = getCookie('lang') || 'en';
+        const ct0 = getCookie('ct0') || '';
         return {
-            'authorization': 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA',
+            authorization: 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA',
             'x-twitter-active-user': 'yes',
-            'x-twitter-client-language': cookies.lang,
-            'x-csrf-token': cookies.ct0
+            'x-twitter-client-language': lang,
+            'x-csrf-token': ct0
         };
-    }
+    };
 
-    function extractMediaFromTweet(data, tweetId) {
-        const tweetEntry = data?.data?.threaded_conversation_with_injections_v2?.instructions?.[0]?.entries?.find(n => n.entryId === `tweet-${tweetId}`);
+    const fetchTweetData = async (tweetId) => {
+        const url = createTweetUrl(tweetId);
+        const headers = createHeaders();
+        try {
+            const response = await fetch(url, { method: 'GET', headers });
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            const data = await response.json();
+            return extractMediaFromTweet(data, tweetId);
+        } catch (error) {
+            console.error(`Failed to fetch tweet data for tweetId ${tweetId}:`, error);
+            return [];
+        }
+    };
+
+    const extractMediaFromTweet = (data, tweetId) => {
+        const tweetEntry = data?.data?.threaded_conversation_with_injections_v2?.instructions?.[0]?.entries?.find(
+            (entry) => entry.entryId === `tweet-${tweetId}`
+        );
         const tweetResult = tweetEntry?.content?.itemContent?.tweet_results?.result;
-
         const tweet = tweetResult?.tweet || tweetResult;
+        if (!tweet) return [];
 
-        if (!tweet) {
-            console.error(`Tweet result not found for tweet ID: ${tweetId}`);
-            return [];
-        }
-
-        const media = tweet?.legacy?.entities?.media;
-
-        if (!media || media.length === 0) {
-            console.error(`No media found for tweet ID: ${tweetId}`);
-            return [];
-        }
-
-        return media.flatMap(item => {
+        const media = tweet?.legacy?.entities?.media || [];
+        return media.flatMap((item) => {
             switch (item.type) {
                 case 'photo':
                     return [item.media_url_https + '?name=orig'];
@@ -139,180 +115,145 @@
                     return [];
             }
         });
-    }
+    };
 
-    function extractVideoMedia(item) {
-        const highestQuality = item.video_info.variants
-            .filter(variant => variant.content_type === 'video/mp4')
-            .reduce((max, variant) => variant.bitrate > max.bitrate ? variant : max, {
-                bitrate: 0
-            });
+    const extractVideoMedia = (item) => {
+        const variants = item.video_info.variants.filter((v) => v.content_type === 'video/mp4');
+        const highestQuality = variants.reduce((max, v) => (v.bitrate > max.bitrate ? v : max), { bitrate: 0 });
+        return highestQuality.url ? [{ url: highestQuality.url, bitrate: highestQuality.bitrate, content_type: highestQuality.content_type }] : [];
+    };
 
-        return [{
-            url: highestQuality.url, bitrate: highestQuality.bitrate, content_type: highestQuality.content_type
-        }];
-    }
+    const extractGifMedia = (item) => {
+        const gifVariant = item.video_info.variants.find((v) => v.content_type === 'video/mp4');
+        return gifVariant ? [{ url: gifVariant.url, bitrate: gifVariant.bitrate, content_type: gifVariant.content_type }] : [];
+    };
 
-    function extractGifMedia(item) {
-        const gifVariant = item.video_info.variants.find(variant => variant.content_type === 'video/mp4');
-        return gifVariant ? [{
-            url: gifVariant.url, bitrate: gifVariant.bitrate, content_type: gifVariant.content_type
-        }] : [];
-    }
+    // ### Media Downloading
+    const downloadMedia = async (tweetElement, mediaData) => {
+    const zip = new JSZip();
+    const { tweetLink, authorHandle, tweetId } = extractTweetInfo(tweetElement);
+    const metadata = buildMetadata(tweetElement, tweetLink, authorHandle);
 
-    async function downloadMedia(tweetElement, mediaData) {
-        const zip = new JSZip();
-        const {
-            tweetLink, authorHandle, tweetId
-        } = extractTweetInfo(tweetElement);
-        const metadata = buildMetadata(tweetElement, tweetLink, authorHandle);
-
-        await Promise.all(mediaData.map(async (media, index) => {
-            const mediaIndex = index + 1;
-            const fileName = `${authorHandle}_${tweetId}_${mediaIndex}`;
+    await Promise.all(
+        mediaData.map(async (media, index) => {
+            const fileName = `${authorHandle}_${tweetId}_${index + 1}`;
             const mediaUrl = await fetchAndSaveMedia(zip, media, fileName);
-            metadata.push(`${mediaUrl}\n`);
-        }));
-
-        addFilesToZip(zip, metadata, tweetLink, authorHandle, tweetId);
-
-        const content = await zip.generateAsync({
-            type: 'blob'
-        });
-        saveAs(content, `${authorHandle}_${tweetId}.zip`);
-    }
-
-    function extractTweetInfo(tweetElement) {
-        const tweetLinkElement = tweetElement.querySelector('a[href*="/status/"]');
-        const tweetLink = tweetLinkElement.href;
-        const tweetParts = tweetLink.match(/https:\/\/(?:x\.com|twitter\.com)\/([^\/]+)\/status\/(\d+)/);
-
-        return {
-            tweetLink: `https://x.com/${tweetParts[1]}/status/${tweetParts[2]}`,
-            authorHandle: tweetParts[1],
-            tweetId: tweetParts[2]
-        };
-    }
-
-    function buildMetadata(tweetElement, tweetLink, authorHandle) {
-        const metadata = [`${tweetLink}\n`];
-        const authorCommentElement = tweetElement.querySelector('div[lang]');
-        const authorComment = authorCommentElement ? authorCommentElement.innerText : '';
-        const dateElement = tweetElement.querySelector('time');
-        const postDateTime = dateElement ? new Date(dateElement.getAttribute('datetime')) : new Date();
-
-        if (authorComment) {
-            metadata.push(`${authorComment}\n`);
-        }
-
-        metadata.push(`@${authorHandle}\n${postDateTime.toLocaleString()}\n`);
-        return metadata;
-    }
-
-    async function fetchAndSaveMedia(zip, media, fileName) {
-        try {
-            let mediaUrl;
-            let mediaBlob;
-
-            if (media.content_type === 'video/mp4') {
-                mediaBlob = await fetch(media.url).then(res => res.blob());
-                mediaUrl = media.url;
-                zip.file(`${fileName}.mp4`, mediaBlob);
-            } else {
-                mediaBlob = await fetch(media).then(res => res.blob());
-                mediaUrl = media;
-                zip.file(`${fileName}.jpg`, mediaBlob);
+            if (mediaUrl) {
+                metadata.media.push({
+                    url: mediaUrl,
+                    type: media.content_type === 'video/mp4' ? 'video' : 'photo',
+                    file_name: `${fileName}.${media.content_type === 'video/mp4' ? 'mp4' : 'jpg'}`
+                });
             }
+        })
+    );
 
-            return mediaUrl;
+    addFilesToZip(zip, metadata, tweetLink, authorHandle, tweetId);
+    const content = await zip.generateAsync({ type: 'blob' });
+    saveAs(content, `${authorHandle}_${tweetId}.zip`);
+};
+
+    const extractTweetInfo = (tweetElement) => {
+        const tweetLinkElement = tweetElement.querySelector('a[href*="/status/"]');
+        if (!tweetLinkElement) return null;
+        const tweetLink = tweetLinkElement.href;
+        const match = tweetLink.match(/https:\/\/(?:x\.com|twitter\.com)\/([^\/]+)\/status\/(\d+)/);
+        if (!match) return null;
+        return {
+            tweetLink: `https://x.com/${match[1]}/status/${match[2]}`,
+            authorHandle: match[1],
+            tweetId: match[2]
+        };
+    };
+
+    const buildMetadata = (tweetElement, tweetLink, authorHandle) => {
+    const tweetId = tweetLink.match(/status\/(\d+)/)[1];
+    const authorCommentElement = tweetElement.querySelector('div[lang]');
+    const authorComment = authorCommentElement?.innerText || '';
+    const dateElement = tweetElement.querySelector('time');
+    const postDateTime = dateElement ? new Date(dateElement.getAttribute('datetime')) : new Date();
+
+    // Extract hashtags and clean text
+    const hashtagRegex = /#(\w+)/g;
+    const hashtags = [...new Set([...authorComment.matchAll(hashtagRegex)].map(match => match[1]))];
+    const cleanText = authorComment.replace(hashtagRegex, '').trim();
+
+    const metadata = {
+        tweet_url: tweetLink,
+        author_handle: authorHandle,
+        posted_at: postDateTime.toISOString(),
+        text: cleanText,
+        hashtags,
+        media: []
+    };
+
+    return metadata;
+};
+
+    const fetchAndSaveMedia = async (zip, media, fileName) => {
+        try {
+            const isVideo = typeof media !== 'string' && media.content_type === 'video/mp4';
+            const url = isVideo ? media.url : media;
+            const mediaBlob = await fetch(url).then((res) => res.blob());
+            const extension = isVideo ? 'mp4' : 'jpg';
+            zip.file(`${fileName}.${extension}`, mediaBlob);
+            return url;
         } catch (error) {
-            console.error('Failed to fetch media:', error);
+            console.error(`Failed to fetch media ${fileName}:`, error);
             return '';
         }
-    }
+    };
 
-    function addFilesToZip(zip, metadata, tweetLink, authorHandle, tweetId) {
-        zip.file('metadata.txt', metadata.join('').trim());
-        zip.file(`${authorHandle}_${tweetId}.url`, `[InternetShortcut]\nURL=${tweetLink}`);
-    }
+    const addFilesToZip = (zip, metadata, tweetLink, authorHandle, tweetId) => {
+    zip.file('metadata.json', JSON.stringify(metadata, null, 2)); // Pretty-print JSON
+    zip.file(`${authorHandle}_${tweetId}.url`, `[InternetShortcut]\nURL=${tweetLink}`);
+};
 
+    // ### DOM Manipulation
+    const addDownloadButton = (tweetElement) => {
+        const tweetInfo = extractTweetInfo(tweetElement);
+        if (!tweetInfo) return;
+        const { tweetId } = tweetInfo;
 
-    function addDownloadButton(tweetElement) {
-        const tweetLinkElement = tweetElement.querySelector('a[href*="/status/"]');
-        if (!tweetLinkElement) return;
-
-        const {tweetId, authorHandle} = extractTweetDetails(tweetLinkElement.href);
-
-        if (!hasMedia(tweetElement)) return;
-
-        if (tweetElement.querySelector('.download-media-btn')) return;
+        if (!hasMedia(tweetElement) || tweetElement.querySelector('.download-media-btn')) return;
 
         const isProcessed = checkIfTweetProcessed(tweetId);
+        const buttonGroup = tweetElement.querySelector('div[role="group"]:last-of-type');
+        if (!buttonGroup) return;
 
-        // Locate the share button to clone
-        const button_group = tweetElement.querySelector('div[role="group"]:last-of-type');
-        const button_share = Array.from(button_group.querySelectorAll(':scope>div>div')).pop().parentNode;
-        const button_download = button_share.cloneNode(true); // Clone the share button
+        const buttonShare = Array.from(buttonGroup.querySelectorAll(':scope > div > div')).pop()?.parentNode;
+        if (!buttonShare) return;
 
-        // Insert your SVG icon into the cloned button
-        const svgElement = button_download.querySelector('svg');
-        if (svgElement) {
-            svgElement.outerHTML = `
-            <svg xmlns="http://www.w3.org/2000/svg"
-            width="24px" height="24px"
-            viewBox="0 0 24 24"
-            fill="${isProcessed ? '#28a745' : '#1da1f2'}"
-            stroke="${isProcessed ? '#28a745' : '#1da1f2'}" stroke-width="0.2" stroke-linecap="round" stroke-linejoin="round"
-            class="download-media-btn">
-            <path d="M 10.09,14.1 4.39,8.4 5.8,6.98 9.09,10.28 V 0.69 h 2 v 9.59 l 3.3,-3.3 1.41,1.42 z m 9.01,-1 -0.02,3.51 c 0,1.38 -1.12,2.49 -2.5,2.49 H 3.6 c -1.39,0 -2.5,-1.12 -2.5,-2.5 v -3.5 h 2 v 3.5 c 0,0.28 0.22,0.5 0.5,0.5 h 12.98 c 0.28,0 0.5,-0.22 0.5,-0.5 l 0.02,-3.5 z"></path>
-            </svg>
-        `;
-        }
+        const buttonDownload = buttonShare.cloneNode(true);
+        const svgElement = buttonDownload.querySelector('svg');
+        if (svgElement) svgElement.outerHTML = getDownloadIcon(isProcessed);
 
-        button_download.style.marginLeft = "10px";
-        button_download.classList.add('download-media-btn'); // Add a class to identify the button
-        button_download.dataset.tweetId = tweetId; // Store the tweetId
+        buttonDownload.style.marginLeft = '10px';
+        buttonDownload.classList.add('download-media-btn');
+        buttonDownload.dataset.tweetId = tweetId;
+        buttonDownload.addEventListener('click', () => onDownloadButtonClick(buttonDownload));
+        buttonShare.parentNode.insertBefore(buttonDownload, buttonShare.nextSibling);
+    };
 
-        // Add event listener to the cloned button
-        button_download.addEventListener('click', () => onDownloadButtonClick(button_download));
+    const getDownloadIcon = (isProcessed) => `
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"
+             fill="${isProcessed ? '#28a745' : '#1da1f2'}" stroke="${isProcessed ? '#28a745' : '#1da1f2'}"
+             stroke-width="0.2" stroke-linecap="round" stroke-linejoin="round" class="download-media-btn">
+            <path d="M10.09 14.1L4.39 8.4 5.8 6.98 9.09 10.28V0.69h2v9.59l3.3-3.3 1.41 1.42zm9.01-1-0.02 3.51c0 1.38-1.12 2.49-2.5 2.49H3.6c-1.39 0-2.5-1.12-2.5-2.5v-3.5h2v3.5c0 0.28 0.22 0.5 0.5 0.5h12.98c0.28 0 0.5-0.22 0.5-0.5l0.02-3.5z"/>
+        </svg>
+    `;
 
-        // Insert the download button before the original share button
-        button_share.parentNode.insertBefore(button_download, button_share.nextSibling);
-    }
-
-
-    function extractTweetDetails(tweetLink) {
-        const tweetParts = tweetLink.match(/https:\/\/(?:x\.com|twitter\.com)\/([^\/]+)\/status\/(\d+)/);
-        return {
-            authorHandle: tweetParts[1], tweetId: tweetParts[2]
-        };
-    }
-
-    function hasMedia(tweetElement) {
-        const mediaSelectors = ['a[href*="/photo/1"]', 'div[role="progressbar"]', 'button[data-testid="playButton"]',];
-        return mediaSelectors.some(selector => tweetElement.querySelector(selector));
-    }
-
-    function checkIfTweetProcessed(tweetId) {
-        const processedTweets = JSON.parse(localStorage.getItem('processedTweets') || '[]');
-        return processedTweets.includes(tweetId);
-    }
-
-    async function onDownloadButtonClick(button) {
+    const onDownloadButtonClick = async (button) => {
         const tweetId = button.dataset.tweetId;
-
         console.log(`Fetching media for tweetId: ${tweetId}`);
-
         setButtonLoadingState(button, true);
 
         try {
-            const mediaData = await retry(async () => await fetchTweetData(tweetId), 3, 1000);
-
-            if (mediaData.length === 0) {
-                console.warn('No media found for this tweet.');
+            const mediaData = await retry(() => fetchTweetData(tweetId), 3, 1000);
+            if (!mediaData.length) {
+                console.warn(`No media found for tweetId: ${tweetId}`);
                 return;
             }
-
             const tweetElement = button.closest('article');
             if (tweetElement) {
                 await downloadMedia(tweetElement, mediaData);
@@ -320,97 +261,87 @@
                 updateButtonIcon(button, true);
             }
         } catch (error) {
-            console.error('Failed to fetch or download media:', error);
+            console.error(`Failed to process tweetId ${tweetId}:`, error);
         } finally {
             setButtonLoadingState(button, false);
         }
-    }
+    };
 
-    async function retry(fn, retries = 3, delay = 1000) {
-        let attempt = 0;
-        while (attempt < retries) {
-            try {
-                return await fn();
-            } catch (error) {
-                attempt++;
-                if (attempt >= retries) throw error;
-                console.warn(`Attempt ${attempt} failed. Retrying in ${delay}ms...`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-            }
-        }
-    }
-
-    function setButtonLoadingState(button, isLoading) {
+    const setButtonLoadingState = (button, isLoading) => {
         const svgElement = button.querySelector('svg');
         if (!svgElement) return;
 
         if (isLoading) {
             svgElement.outerHTML = `
-            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 120 30" fill="#1da1f2">
-                <circle cx="15" cy="15" r="15">
-                    <animate attributeName="r" from="15" to="15" begin="0s" dur="0.8s"
-                        values="15;9;15" calcMode="linear" repeatCount="indefinite" />
-                    <animate attributeName="fill-opacity" from="1" to="1" begin="0s" dur="0.8s"
-                        values="1;.5;1" calcMode="linear" repeatCount="indefinite" />
-                </circle>
-                <circle cx="60" cy="15" r="9" fill-opacity="0.3">
-                    <animate attributeName="r" from="9" to="9" begin="0s" dur="0.8s"
-                        values="9;15;9" calcMode="linear" repeatCount="indefinite" />
-                    <animate attributeName="fill-opacity" from="0.5" to="0.5" begin="0s" dur="0.8s"
-                        values=".5;1;.5" calcMode="linear" repeatCount="indefinite" />
-                </circle>
-                <circle cx="105" cy="15" r="15">
-                    <animate attributeName="r" from="15" to="15" begin="0s" dur="0.8s"
-                        values="15;9;15" calcMode="linear" repeatCount="indefinite" />
-                    <animate attributeName="fill-opacity" from="1" to="1" begin="0s" dur="0.8s"
-                        values="1;.5;1" calcMode="linear" repeatCount="indefinite" />
-                </circle>
-            </svg>
-        `;
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 120 30" fill="#1da1f2">
+                    <circle cx="15" cy="15" r="15">
+                        <animate attributeName="r" from="15" to="15" begin="0s" dur="0.8s" values="15;9;15" calcMode="linear" repeatCount="indefinite"/>
+                        <animate attributeName="fill-opacity" from="1" to="1" begin="0s" dur="0.8s" values="1;.5;1" calcMode="linear" repeatCount="indefinite"/>
+                    </circle>
+                    <circle cx="60" cy="15" r="9" fill-opacity="0.3">
+                        <animate attributeName="r" from="9" to="9" begin="0s" dur="0.8s" values="9;15;9" calcMode="linear" repeatCount="indefinite"/>
+                        <animate attributeName="fill-opacity" from="0.5" to="0.5" begin="0s" dur="0.8s" values=".5;1;.5" calcMode="linear" repeatCount="indefinite"/>
+                    </circle>
+                    <circle cx="105" cy="15" r="15">
+                        <animate attributeName="r" from="15" to="15" begin="0s" dur="0.8s" values="15;9;15" calcMode="linear" repeatCount="indefinite"/>
+                        <animate attributeName="fill-opacity" from="1" to="1" begin="0s" dur="0.8s" values="1;.5;1" calcMode="linear" repeatCount="indefinite"/>
+                    </circle>
+                </svg>
+            `;
             button.disabled = true;
         } else {
             button.disabled = false;
+            updateButtonIcon(button, checkIfTweetProcessed(button.dataset.tweetId));
         }
-    }
+    };
 
-    function updateButtonIcon(button, isSuccess) {
+    const updateButtonIcon = (button, isSuccess) => {
         const svgElement = button.querySelector('svg');
-        if (!svgElement) return;
+        if (svgElement) svgElement.outerHTML = getDownloadIcon(isSuccess);
+    };
 
-        svgElement.outerHTML = `
-        <svg xmlns="http://www.w3.org/2000/svg"
-        width="24px" height="24px"
-        viewBox="0 0 24 24"
-        fill="${isSuccess ? '#28a745' : '#1da1f2'}"
-        stroke="${isSuccess ? '#28a745' : '#1da1f2'}" stroke-width="0.2" stroke-linecap="round" stroke-linejoin="round"
-        class="completed">
-        <path d="M 10.09,14.1 4.39,8.4 5.8,6.98 9.09,10.28 V 0.69 h 2 v 9.59 l 3.3,-3.3 1.41,1.42 z m 9.01,-1 -0.02,3.51 c 0,1.38 -1.12,2.49 -2.5,2.49 H 3.6 c -1.39,0 -2.5,-1.12 -2.5,-2.5 v -3.5 h 2 v 3.5 c 0,0.28 0.22,0.5 0.5,0.5 h 12.98 c 0.28,0 0.5,-0.22 0.5,-0.5 l 0.02,-3.5 z"></path>
-        </svg>
-    `;
-    }
+    // ### Utility Functions
+    const hasMedia = (tweetElement) => {
+        const mediaSelectors = ['a[href*="/photo/1"]', 'div[role="progressbar"]', 'button[data-testid="playButton"]'];
+        return mediaSelectors.some((selector) => tweetElement.querySelector(selector));
+    };
 
+    const checkIfTweetProcessed = (tweetId) => {
+        const processedTweets = JSON.parse(localStorage.getItem('processedTweets') || '[]');
+        return processedTweets.includes(tweetId);
+    };
 
-    function markTweetAsProcessed(tweetId) {
+    const markTweetAsProcessed = (tweetId) => {
         const processedTweets = JSON.parse(localStorage.getItem('processedTweets') || '[]');
         if (!processedTweets.includes(tweetId)) {
             processedTweets.push(tweetId);
             localStorage.setItem('processedTweets', JSON.stringify(processedTweets));
         }
-    }
+    };
 
-
-    const observer = new MutationObserver(mutations => {
-        for (const mutation of mutations) {
-            for (const addedNode of mutation.addedNodes) {
-                if (addedNode.nodeType === Node.ELEMENT_NODE) {
-                    const tweetElements = addedNode.matches('article') ? [addedNode] : addedNode.querySelectorAll('article');
-                    tweetElements.forEach(tweetElement => addDownloadButton(tweetElement));
-                }
+    const retry = async (fn, retries = 3, delay = 1000) => {
+        for (let attempt = 0; attempt < retries; attempt++) {
+            try {
+                return await fn();
+            } catch (error) {
+                if (attempt === retries - 1) throw error;
+                console.warn(`Attempt ${attempt + 1} failed. Retrying in ${delay}ms...`);
+                await new Promise((resolve) => setTimeout(resolve, delay));
             }
         }
+    };
+
+    // ### Observer Setup
+    const observer = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+            mutation.addedNodes.forEach((node) => {
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                    const tweetElements = node.matches('article') ? [node] : node.querySelectorAll('article');
+                    tweetElements.forEach(addDownloadButton);
+                }
+            });
+        });
     });
 
-    observer.observe(document.body, {
-        childList: true, subtree: true
-    });
+    observer.observe(document.body, { childList: true, subtree: true });
 })();
