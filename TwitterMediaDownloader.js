@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitter Media Downloader
 // @namespace    http://tampermonkey.net/
-// @version      1.8
+// @version      2.0
 // @description  Download images and videos from Twitter posts and pack them into a ZIP archive with metadata.
 // @author       Dramorian
 // @license      MIT
@@ -14,7 +14,7 @@
 (function () {
     'use strict';
 
-    const API_URL = 'https://x.com/i/api/graphql/QuBlQ6SxNAQCt6-kBiCXCQ/TweetDetail';
+    const API_URL = 'https://x.com/i/api/graphql/zAz9764BcLZOJ0JU2wrd1A/TweetResultByRestId';
 
     // ### Cookie Handling
     const getCookie = (name) => {
@@ -26,7 +26,7 @@
     // ### API Interaction
     const createTweetUrl = (tweetId) => {
         const variables = {
-            focalTweetId: tweetId,
+            tweetId: tweetId,
             with_rux_injections: false,
             rankingMode: 'Relevance',
             includePromotedContent: true,
@@ -36,29 +36,40 @@
             withVoice: true
         };
         const features = {
-            rweb_tipjar_consumption_enabled: true,
-            responsive_web_graphql_exclude_directive_enabled: true,
-            verified_phone_label_enabled: false,
-            creator_subscriptions_tweet_preview_api_enabled: true,
-            responsive_web_graphql_timeline_navigation_enabled: true,
-            responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
-            communities_web_enable_tweet_community_results_fetch: true,
-            c9s_tweet_anatomy_moderator_badge_enabled: true,
-            articles_preview_enabled: true,
-            responsive_web_edit_tweet_api_enabled: true,
-            graphql_is_translatable_rweb_tweet_is_translatable_enabled: true,
-            view_counts_everywhere_api_enabled: true,
-            longform_notetweets_consumption_enabled: true,
-            responsive_web_twitter_article_tweet_consumption_enabled: true,
-            tweet_awards_web_tipping_enabled: false,
-            creator_subscriptions_quote_tweet_preview_enabled: false,
-            freedom_of_speech_not_reach_fetch_enabled: true,
-            standardized_nudges_misinfo: true,
-            tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
-            rweb_video_timestamps_enabled: true,
-            longform_notetweets_rich_text_read_enabled: true,
-            longform_notetweets_inline_media_enabled: true,
-            responsive_web_enhance_cards_enabled: false
+            "articles_preview_enabled":true,
+            "c9s_tweet_anatomy_moderator_badge_enabled":true,
+            "communities_web_enable_tweet_community_results_fetch":false,
+            "creator_subscriptions_quote_tweet_preview_enabled":false,
+            "creator_subscriptions_tweet_preview_api_enabled":false,
+            "freedom_of_speech_not_reach_fetch_enabled":true,
+            "graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,
+            "longform_notetweets_consumption_enabled":false,
+            "longform_notetweets_inline_media_enabled":true,
+            "longform_notetweets_rich_text_read_enabled":false,
+            "premium_content_api_read_enabled":false,
+            "profile_label_improvements_pcf_label_in_post_enabled":true,
+            "responsive_web_edit_tweet_api_enabled":false,
+            "responsive_web_enhance_cards_enabled":false,
+            "responsive_web_graphql_exclude_directive_enabled":false,
+            "responsive_web_graphql_skip_user_profile_image_extensions_enabled":false,
+            "responsive_web_graphql_timeline_navigation_enabled":false,
+            "responsive_web_grok_analysis_button_from_backend":false,
+            "responsive_web_grok_analyze_button_fetch_trends_enabled":false,
+            "responsive_web_grok_analyze_post_followups_enabled":false,
+            "responsive_web_grok_image_annotation_enabled":false,
+            "responsive_web_grok_share_attachment_enabled":false,
+            "responsive_web_grok_show_grok_translated_post":false,
+            "responsive_web_jetfuel_frame":false,
+            "responsive_web_media_download_video_enabled":false,
+            "responsive_web_twitter_article_tweet_consumption_enabled":true,
+            "rweb_tipjar_consumption_enabled":true,
+            "rweb_video_screen_enabled":false,
+            "standardized_nudges_misinfo":true,
+            "tweet_awards_web_tipping_enabled":false,
+            "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,
+            "tweetypie_unmention_optimization_enabled":false,
+            "verified_phone_label_enabled":false,
+            "view_counts_everywhere_api_enabled":true,
         };
         const fieldToggles = {
             withArticleRichContentState: true,
@@ -95,14 +106,22 @@
     };
 
     const extractMediaFromTweet = (data, tweetId) => {
-        const tweetEntry = data?.data?.threaded_conversation_with_injections_v2?.instructions?.[0]?.entries?.find(
-            (entry) => entry.entryId === `tweet-${tweetId}`
+        // Try the new API structure first
+        let tweet = data?.data?.tweetResult?.result;
+
+        // Fall back to the old structure if the new one isn't found
+        if (!tweet) {
+            const tweetEntry = data?.data?.threaded_conversation_with_injections_v2?.instructions?.[0]?.entries?.find(
+                (entry) => entry.entryId === `tweet-${tweetId}`
         );
         const tweetResult = tweetEntry?.content?.itemContent?.tweet_results?.result;
-        const tweet = tweetResult?.tweet || tweetResult;
+        tweet = tweetResult?.tweet || tweetResult;
+    }
+
         if (!tweet) return [];
 
-        const media = tweet?.legacy?.entities?.media || [];
+        // Use extended_entities first (more comprehensive), fall back to entities if not available
+        const media = tweet?.legacy?.extended_entities?.media || tweet?.legacy?.entities?.media || [];
         return media.flatMap((item) => {
             switch (item.type) {
                 case 'photo':
@@ -130,28 +149,28 @@
 
     // ### Media Downloading
     const downloadMedia = async (tweetElement, mediaData) => {
-    const zip = new JSZip();
-    const { tweetLink, authorHandle, tweetId } = extractTweetInfo(tweetElement);
-    const metadata = buildMetadata(tweetElement, tweetLink, authorHandle);
+        const zip = new JSZip();
+        const { tweetLink, authorHandle, tweetId } = extractTweetInfo(tweetElement);
+        const metadata = buildMetadata(tweetElement, tweetLink, authorHandle);
 
-    await Promise.all(
-        mediaData.map(async (media, index) => {
-            const fileName = `${authorHandle}_${tweetId}_${index + 1}`;
-            const mediaUrl = await fetchAndSaveMedia(zip, media, fileName);
-            if (mediaUrl) {
-                metadata.media.push({
-                    url: mediaUrl,
-                    type: media.content_type === 'video/mp4' ? 'video' : 'photo',
-                    file_name: `${fileName}.${media.content_type === 'video/mp4' ? 'mp4' : 'jpg'}`
+        await Promise.all(
+            mediaData.map(async (media, index) => {
+                const fileName = `${authorHandle}_${tweetId}_${index + 1}`;
+                const mediaUrl = await fetchAndSaveMedia(zip, media, fileName);
+                if (mediaUrl) {
+                    metadata.media.push({
+                        url: mediaUrl,
+                        type: media.content_type === 'video/mp4' ? 'video' : 'photo',
+                        file_name: `${fileName}.${media.content_type === 'video/mp4' ? 'mp4' : 'jpg'}`
                 });
-            }
-        })
-    );
+                }
+            })
+        );
 
-    addFilesToZip(zip, metadata, tweetLink, authorHandle, tweetId);
-    const content = await zip.generateAsync({ type: 'blob' });
-    saveAs(content, `${authorHandle}_${tweetId}.zip`);
-};
+        addFilesToZip(zip, metadata, tweetLink, authorHandle, tweetId);
+        const content = await zip.generateAsync({ type: 'blob' });
+        saveAs(content, `${authorHandle}_${tweetId}.zip`);
+    };
 
     const extractTweetInfo = (tweetElement) => {
         const tweetLinkElement = tweetElement.querySelector('a[href*="/status/"]');
@@ -167,28 +186,28 @@
     };
 
     const buildMetadata = (tweetElement, tweetLink, authorHandle) => {
-    const tweetId = tweetLink.match(/status\/(\d+)/)[1];
-    const authorCommentElement = tweetElement.querySelector('div[lang]');
-    const authorComment = authorCommentElement?.innerText || '';
-    const dateElement = tweetElement.querySelector('time');
-    const postDateTime = dateElement ? new Date(dateElement.getAttribute('datetime')) : new Date();
+        const tweetId = tweetLink.match(/status\/(\d+)/)[1];
+        const authorCommentElement = tweetElement.querySelector('div[lang]');
+        const authorComment = authorCommentElement?.innerText || '';
+        const dateElement = tweetElement.querySelector('time');
+        const postDateTime = dateElement ? new Date(dateElement.getAttribute('datetime')) : new Date();
 
-    // Extract hashtags and clean text
-    const hashtagRegex = /#(\w+)/g;
-    const hashtags = [...new Set([...authorComment.matchAll(hashtagRegex)].map(match => match[1]))];
-    const cleanText = authorComment.replace(hashtagRegex, '').trim();
+        // Extract hashtags and clean text
+        const hashtagRegex = /#(\w+)/g;
+        const hashtags = [...new Set([...authorComment.matchAll(hashtagRegex)].map(match => match[1]))];
+        const cleanText = authorComment.replace(hashtagRegex, '').trim();
 
-    const metadata = {
-        tweet_url: tweetLink,
-        author_handle: authorHandle,
-        posted_at: postDateTime.toISOString(),
-        text: cleanText,
-        hashtags,
-        media: []
+        const metadata = {
+            tweet_url: tweetLink,
+            author_handle: authorHandle,
+            posted_at: postDateTime.toISOString(),
+            text: cleanText,
+            hashtags,
+            media: []
+        };
+
+        return metadata;
     };
-
-    return metadata;
-};
 
     const fetchAndSaveMedia = async (zip, media, fileName) => {
         try {
@@ -205,9 +224,9 @@
     };
 
     const addFilesToZip = (zip, metadata, tweetLink, authorHandle, tweetId) => {
-    zip.file('metadata.json', JSON.stringify(metadata, null, 2)); // Pretty-print JSON
-    zip.file(`${authorHandle}_${tweetId}.url`, `[InternetShortcut]\nURL=${tweetLink}`);
-};
+        zip.file('metadata.json', JSON.stringify(metadata, null, 2)); // Pretty-print JSON
+        zip.file(`${authorHandle}_${tweetId}.url`, `[InternetShortcut]\nURL=${tweetLink}`);
+    };
 
     // ### DOM Manipulation
     const addDownloadButton = (tweetElement) => {
